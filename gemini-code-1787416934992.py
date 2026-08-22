@@ -2,7 +2,7 @@ import math
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Grid Draft Board & Keepers", layout="wide")
+st.set_page_config(page_title="Fantasy Mock Draft & Scarcity Dashboard", layout="wide")
 
 # Full 16-round draft board based on your league's trades
 DRAFT_ORDER = [
@@ -41,14 +41,14 @@ DRAFT_ORDER = [
 ]
 
 @st.cache_data
-def load_data():
+def load_base_data():
     df = pd.read_csv('fantasy_football_rankings.csv')
     df = df[['Player', 'Position', 'Team', 'Tier', 'Consensus', 'ADP']].copy()
     
-    # Calculate Positional Rank
+    # Calculate initial Positional Rank in overall pool
     df['Pos_Rank'] = df.groupby('Position')['Consensus'].rank(method='min')
     
-    # 2QB / Superflex Scarcity Point Projections
+    # 2QB / Superflex Scarcity Point Curve Model
     def estimate_points(row):
         pos = row['Position']
         rank = row['Pos_Rank']
@@ -61,82 +61,125 @@ def load_data():
         return 0
         
     df['Est_Pts'] = df.apply(estimate_points, axis=1)
-    
-    # 12-Team 2QB Baselines
-    baselines = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
-    
-    rep_pts = {}
-    for pos, base_rank in baselines.items():
-        pos_df = df[df['Position'] == pos]
-        if len(pos_df) >= base_rank:
-            rep_pts[pos] = pos_df[pos_df['Pos_Rank'] == base_rank].iloc[0]['Est_Pts']
-        else:
-            rep_pts[pos] = pos_df['Est_Pts'].min() if not pos_df.empty else 0
-            
-    df['VOR'] = df.apply(lambda row: round(row['Est_Pts'] - rep_pts.get(row['Position'], 0), 1), axis=1)
-    return df.sort_values('VOR', ascending=False).reset_index(drop=True)
+    return df
 
-df_rankings = load_data()
+df_base = load_base_data()
 
-# Session State for draft slot allocations (192 total picks)
+# Initialize slots in session state
 if 'slots' not in st.session_state:
     st.session_state.slots = {i: None for i in range(192)}
 
-st.title("🏈 Fantasy Mock Draft Grid & Keeper Dashboard")
+if 'keepers' not in st.session_state:
+    st.session_state.keepers = set()
 
 # -----------------
-# 1. SLOT MANAGER (KEEPER & DRAFT INPUT)
+# SIDEBAR CONTROLS
 # -----------------
-st.sidebar.header("Assign Players to Slots")
-st.sidebar.markdown("Use this to lock in keepers or manually assign picks anywhere on the board.")
+st.sidebar.title("Draft Settings & Controls")
 
-# Generate labels for all 192 picks
+vor_mode = st.sidebar.radio(
+    "VOR Scarcity Mode",
+    ["Keeper-Adjusted Baseline (Roadmap)", "Live Dynamic (Real-Time Run Tracker)"],
+    help="Keeper-Adjusted locks the baseline after accounting for keepers. Live Dynamic constantly adjusts baselines as picks are made."
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Assign Keepers / Slot Picks")
+
 slot_labels = {}
 for i, team in enumerate(DRAFT_ORDER):
     rnd = (i // 12) + 1
     pick = (i % 12) + 1
     slot_labels[i] = f"{rnd}.{pick:02d} ({team})"
 
-# Dropdown to select a specific slot to edit
 selected_slot_idx = st.sidebar.selectbox("Select Draft Slot", options=list(slot_labels.keys()), format_func=lambda x: slot_labels[x])
 
-# Filter out players already assigned anywhere on the board
-drafted_players = [p for p in st.session_state.slots.values() if p is not None]
-available_df = df_rankings[~df_rankings['Player'].isin(drafted_players)]
-available_players = ["(Clear Slot)"] + available_df['Player'].tolist()
+taken_players = [p for p in st.session_state.slots.values() if p is not None]
+available_players_list = ["(Clear Slot)"] + [p for p in df_base['Player'] if p not in taken_players]
 
-selected_player = st.sidebar.selectbox("Select Player to Assign", available_players)
+selected_player = st.sidebar.selectbox("Select Player", available_players_list)
+is_keeper_check = st.sidebar.checkbox("Mark as Keeper", value=True)
 
-col1, col2 = st.sidebar.columns(2)
-if col1.button("Assign / Keep", use_container_width=True):
+col_k1, col_k2 = st.sidebar.columns(2)
+if col_k1.button("Assign / Save", use_container_width=True):
     if selected_player == "(Clear Slot)":
+        prev_player = st.session_state.slots[selected_slot_idx]
         st.session_state.slots[selected_slot_idx] = None
+        if prev_player in st.session_state.keepers:
+            st.session_state.keepers.remove(prev_player)
     else:
         st.session_state.slots[selected_slot_idx] = selected_player
+        if is_keeper_check:
+            st.session_state.keepers.add(selected_player)
+        elif selected_player in st.session_state.keepers:
+            st.session_state.keepers.remove(selected_player)
     st.rerun()
 
-# Quick Assign feature for standard drafting (next available empty slot)
+# Quick Pick for on-the-clock drafting
 st.sidebar.markdown("---")
-st.sidebar.subheader("Live Draft (Next Empty Pick)")
+st.sidebar.subheader("Live Draft Clock")
 next_pick_idx = next((i for i in range(192) if st.session_state.slots[i] is None), None)
 
 if next_pick_idx is not None:
     st.sidebar.write(f"**On the Clock:** {slot_labels[next_pick_idx]}")
-    live_player = st.sidebar.selectbox("Select Player", available_df['Player'].tolist(), key="live_draft_select")
-    if st.sidebar.button("Draft Player", type="primary"):
+    live_player = st.sidebar.selectbox("Draft Next Player", [p for p in df_base['Player'] if p not in taken_players], key="live_pick")
+    if st.sidebar.button("Draft Pick", type="primary", use_container_width=True):
         st.session_state.slots[next_pick_idx] = live_player
         st.rerun()
 else:
-    st.sidebar.success("Draft Board is full!")
+    st.sidebar.success("Draft Complete!")
+
+if st.sidebar.button("Reset Entire Board"):
+    st.session_state.slots = {i: None for i in range(192)}
+    st.session_state.keepers = set()
+    st.rerun()
+
 
 # -----------------
-# 2. DRAFT BOARD GRID & DASHBOARD
+# VOR CALCULATION ENGINE
 # -----------------
-tab1, tab2 = st.tabs(["Draft Board Grid", "Available Player Dashboard"])
+total_needed = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
+
+if "Live Dynamic" in vor_mode:
+    # Baseline adjusts based on ALL taken players so far
+    removed_players = taken_players
+else:
+    # Baseline adjusts ONLY based on designated Keepers
+    removed_players = list(st.session_state.keepers)
+
+# Calculate removed counts by position
+removed_df = df_base[df_base['Player'].isin(removed_players)]
+removed_counts = removed_df['Position'].value_counts().to_dict()
+
+# Calculate remaining pool and new VOR
+available_df = df_base[~df_base['Player'].isin(taken_players)].copy()
+available_df['Pool_Pos_Rank'] = available_df.groupby('Position')['Consensus'].rank(method='min')
+
+rep_pts = {}
+for pos, base_total in total_needed.items():
+    effective_target = max(1, base_total - removed_counts.get(pos, 0))
+    pos_sub = available_df[available_df['Position'] == pos]
+    if len(pos_sub) >= effective_target:
+        rep_pts[pos] = pos_sub[pos_sub['Pool_Pos_Rank'] == effective_target].iloc[0]['Est_Pts']
+    else:
+        rep_pts[pos] = pos_sub['Est_Pts'].min() if not pos_sub.empty else 0
+
+available_df['VOR'] = available_df.apply(
+    lambda row: round(row['Est_Pts'] - rep_pts.get(row['Position'], 0), 1), axis=1
+)
+available_df = available_df.sort_values('VOR', ascending=False).reset_index(drop=True)
+
+
+# -----------------
+# MAIN DASHBOARD TABS
+# -----------------
+st.title("🏈 Fantasy Mock Draft Grid & Dynamic Scarcity Board")
+
+tab1, tab2 = st.tabs(["Draft Board Grid", "Available Players & Scarcity Dashboard"])
 
 with tab1:
-    st.markdown("### The Board")
-    st.markdown("Picks belonging to **Something Something Drake Maye** are highlighted with ⭐.")
+    st.markdown("### Draft Board")
+    st.caption("Picks marked with 🔒 are designated Keepers. ⭐ indicates your draft picks.")
     
     board_display = []
     for rnd in range(16):
@@ -147,6 +190,8 @@ with tab1:
             player = st.session_state.slots[idx]
             
             cell_text = player if player else "-"
+            if player and player in st.session_state.keepers:
+                cell_text = f"🔒 {cell_text}"
             if team == "Something Something Drake Maye":
                 cell_text = f"⭐ {cell_text}"
                 
@@ -154,8 +199,24 @@ with tab1:
         board_display.append(row_data)
 
     df_board = pd.DataFrame(board_display, index=[f"Round {r+1}" for r in range(16)])
-    st.dataframe(df_board, use_container_width=True, height=600)
+    st.dataframe(df_board, use_container_width=True, height=580)
 
 with tab2:
-    st.subheader("Available Players (Sorted by Value Over Replacement)")
-    st.dataframe(available_df[['Player', 'Position', 'Team', 'Tier', 'Pos_Rank', 'VOR', 'ADP']], use_container_width=True, height=600)
+    st.subheader(f"Available Players ({vor_mode})")
+    
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+    qbs_left = len(available_df[available_df['Position'] == 'QB'])
+    rbs_left = len(available_df[available_df['Position'] == 'RB'])
+    wrs_left = len(available_df[available_df['Position'] == 'WR'])
+    tes_left = len(available_df[available_df['Position'] == 'TE'])
+    
+    col_kpi1.metric("Available QBs", qbs_left)
+    col_kpi2.metric("Available RBs", rbs_left)
+    col_kpi3.metric("Available WRs", wrs_left)
+    col_kpi4.metric("Available TEs", tes_left)
+    
+    st.dataframe(
+        available_df[['Player', 'Position', 'Team', 'Tier', 'Pos_Rank', 'VOR', 'ADP']],
+        use_container_width=True,
+        height=500
+    )
