@@ -1,10 +1,9 @@
 import streamlit as st
 import pandas as pd
 
-# Page config
-st.set_page_config(page_title="Fantasy Draft Board", layout="wide")
+st.set_page_config(page_title="Grid Draft Board & Keepers", layout="wide")
 
-# The fully transcribed 16-round draft board based on your league's trades
+# Full 16-round draft board based on your league's trades
 DRAFT_ORDER = [
     # Round 1
     "A More Rippl", "Scarred From", "Done done done", "The Barding", "CMC Music Fa", "crimsan jhad", "merkle fully", "A More Rippl", "sackinbycorin", "Something Something Drake Maye", "Done done done", "Titans and Co",
@@ -48,7 +47,7 @@ def load_data():
     # Calculate Positional Rank
     df['Pos_Rank'] = df.groupby('Position')['Consensus'].rank(method='min')
     
-    # Baseline Replacement Levels for a 12-team 2QB/Superflex setup
+    # Baseline Replacement Levels (2QB, 2FLEX = deeper starting rosters)
     baselines = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
     
     rep_values = {}
@@ -64,77 +63,94 @@ def load_data():
 
 df_rankings = load_data()
 
-# Initialize session state for drafted players
-if 'drafted' not in st.session_state:
-    st.session_state.drafted = [None] * 192
+# Session State for draft slot allocations (192 total picks)
+if 'slots' not in st.session_state:
+    st.session_state.slots = {i: None for i in range(192)}
 
-st.title("🏈 Fantasy Mock Draft Tool")
+st.title("🏈 Keeper / Mock Draft Grid")
 
-# Find the next available pick
-current_pick_idx = next((i for i, x in enumerate(st.session_state.drafted) if x is None), 192)
+# -----------------
+# 1. SLOT MANAGER (KEEPER & DRAFT INPUT)
+# -----------------
+st.sidebar.header("Assign Players to Slots")
+st.sidebar.markdown("Use this to lock in keepers or manually assign picks anywhere on the board.")
 
-col1, col2 = st.columns([1, 2])
+# Generate labels for all 192 picks
+slot_labels = {}
+for i, team in enumerate(DRAFT_ORDER):
+    rnd = (i // 12) + 1
+    pick = (i % 12) + 1
+    slot_labels[i] = f"{rnd}.{pick:02d} ({team})"
 
-with col1:
-    st.header("Draft Controls")
-    if current_pick_idx < 192:
-        current_team = DRAFT_ORDER[current_pick_idx]
-        st.subheader(f"On the Clock: {current_team}")
-        st.write(f"Round {(current_pick_idx // 12) + 1}, Pick {(current_pick_idx % 12) + 1}")
-        
-        # Filter available players
-        drafted_players = [p for p in st.session_state.drafted if p is not None]
-        available_df = df_rankings[~df_rankings['Player'].isin(drafted_players)]
-        
-        selected_player = st.selectbox("Select Player to Draft:", available_df['Player'].tolist())
-        
-        if st.button("Draft Player"):
-            st.session_state.drafted[current_pick_idx] = selected_player
-            st.rerun()
+# Dropdown to select a specific slot to edit
+selected_slot_idx = st.sidebar.selectbox("Select Draft Slot", options=list(slot_labels.keys()), format_func=lambda x: slot_labels[x])
+
+# Filter out players already assigned anywhere on the board
+drafted_players = [p for p in st.session_state.slots.values() if p is not None]
+available_df = df_rankings[~df_rankings['Player'].isin(drafted_players)]
+available_players = ["(Clear Slot)"] + available_df['Player'].tolist()
+
+selected_player = st.sidebar.selectbox("Select Player to Assign", available_players)
+
+col1, col2 = st.sidebar.columns(2)
+if col1.button("Assign / Keep", use_container_width=True):
+    if selected_player == "(Clear Slot)":
+        st.session_state.slots[selected_slot_idx] = None
     else:
-        st.success("Draft Complete!")
+        st.session_state.slots[selected_slot_idx] = selected_player
+    st.rerun()
 
-    if st.button("Undo Last Pick"):
-        if current_pick_idx > 0:
-            st.session_state.drafted[current_pick_idx - 1] = None
-            st.rerun()
-            
-    st.markdown("---")
-    st.subheader("Your Upcoming Picks")
-    my_picks = [(i, (i // 12) + 1, (i % 12) + 1) for i, team in enumerate(DRAFT_ORDER) if team == "Something Something Drake Maye"]
-    for idx, rd, pk in my_picks:
-        status = f"✅ Drafted: {st.session_state.drafted[idx]}" if st.session_state.drafted[idx] else "⏳ Pending"
-        st.write(f"**Round {rd}, Pick {pk}** (Overall {idx+1}) - {status}")
+# Quick Assign feature for standard drafting (next available empty slot)
+st.sidebar.markdown("---")
+st.sidebar.subheader("Live Draft (Next Empty Pick)")
+next_pick_idx = next((i for i in range(192) if st.session_state.slots[i] is None), None)
 
-with col2:
-    tab1, tab2, tab3 = st.tabs(["Available Players", "Full Draft Board", "Team Dashboard (VOR)"])
+if next_pick_idx is not None:
+    st.sidebar.write(f"**On the Clock:** {slot_labels[next_pick_idx]}")
+    live_player = st.sidebar.selectbox("Select Player", available_df['Player'].tolist(), key="live_draft_select")
+    if st.sidebar.button("Draft Player", type="primary"):
+        st.session_state.slots[next_pick_idx] = live_player
+        st.rerun()
+else:
+    st.sidebar.success("Draft Board is full!")
+
+
+# -----------------
+# 2. DRAFT BOARD GRID & DASHBOARD
+# -----------------
+tab1, tab2 = st.tabs(["Draft Board Grid", "Available Player Dashboard"])
+
+with tab1:
+    st.markdown("### The Board")
+    st.markdown("Picks belonging to **Something Something Drake Maye** are highlighted.")
     
-    with tab1:
-        st.dataframe(available_df[['Player', 'Position', 'Team', 'Tier', 'VOR', 'ADP']], use_container_width=True, height=500)
-        
-    with tab2:
-        # Construct Draft Board Matrix
-        board = []
-        for rd in range(16):
-            row = []
-            for pk in range(12):
-                idx = rd * 12 + pk
-                team = DRAFT_ORDER[idx]
-                player = st.session_state.drafted[idx] or "-"
-                row.append(f"{team}\n{player}")
-            board.append(row)
-        df_board = pd.DataFrame(board, columns=[f"Pick {i+1}" for i in range(12)], index=[f"Round {i+1}" for i in range(16)])
-        st.dataframe(df_board, use_container_width=True)
-        
-    with tab3:
-        # Calculate Team VOR
-        team_rosters = {team: [] for team in set(DRAFT_ORDER)}
-        for idx, player in enumerate(st.session_state.drafted):
-            if player:
-                team = DRAFT_ORDER[idx]
-                player_vor = df_rankings[df_rankings['Player'] == player]['VOR'].values[0]
-                team_rosters[team].append(player_vor)
+    # Build a DataFrame representing the 16x12 grid
+    board_display = []
+    for rnd in range(16):
+        row_data = {}
+        for pk in range(12):
+            idx = rnd * 12 + pk
+            team = DRAFT_ORDER[idx]
+            player = st.session_state.slots[idx]
+            
+            # Formatting the cell content
+            cell_text = player if player else "-"
+            # Add star emoji for your picks to make them stand out
+            if team == "Something Something Drake Maye":
+                cell_text = f"⭐ {cell_text}"
                 
-        team_vor_totals = {team: sum(vors) for team, vors in team_rosters.items()}
-        df_vor = pd.DataFrame(list(team_vor_totals.items()), columns=["Team", "Total VOR"]).sort_values("Total VOR", ascending=False)
-        st.bar_chart(df_vor.set_index("Team"))
+            row_data[f"Pick {pk+1}"] = cell_text
+        board_display.append(row_data)
+
+    df_board = pd.DataFrame(board_display, index=[f"Round {r+1}" for r in range(16)])
+    
+    # Display the grid
+    st.dataframe(df_board, use_container_width=True, height=600)
+    
+    st.markdown("""
+    **Pro Tip:** To lock in Brock Bowers at 5.10 and Drake Maye at 11.10, open the **Assign Players to Slots** sidebar on the left, search for slot `5.10 (Something Something Drake Maye)`, choose Brock Bowers, and click Assign. Repeat for 11.10 and Drake Maye.
+    """)
+
+with tab2:
+    st.subheader("Available Players (Sorted by Value Over Replacement)")
+    st.dataframe(available_df[['Player', 'Position', 'Team', 'Tier', 'VOR', 'ADP']], use_container_width=True, height=600)
