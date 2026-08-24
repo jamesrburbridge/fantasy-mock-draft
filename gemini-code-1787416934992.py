@@ -4,7 +4,7 @@ import pandas as pd
 
 st.set_page_config(page_title="Fantasy Mock Draft & Scarcity Dashboard", layout="wide")
 
-# Full 16-round draft board based on your league's trades
+# Full 16-round draft order with trades
 DRAFT_ORDER = [
     # Round 1
     "A More Rippl", "Scarred From", "Done done done", "The Barding", "CMC Music Fa", "crimsan jhad", "merkle fully", "A More Rippl", "sackinbycorin", "Something Something Drake Maye", "Done done done", "Titans and Co",
@@ -40,6 +40,34 @@ DRAFT_ORDER = [
     "CMC Music Fa", "Team Emoji 🏈", "Something Something Drake Maye", "sackinbycorin", "Big Penix En", "merkle fully", "crimsan jhad", "CMC Music Fa", "The Barding", "Team Emoji 🏈", "Scarred From", "A More Rippl"
 ]
 
+# Locked Keepers mapped to their 0-indexed draft slots
+INITIAL_KEEPERS = {
+    15: "Justin Herbert", 
+    40: "Chase Brown", 
+    45: "Jaxon Smith-Njigba",
+    56: "Chris Olave", 
+    57: "Brock Bowers",
+    68: "Bo Nix", 
+    70: "Travis Etienne",
+    72: "Tyler Warren", 
+    80: "Javonte Williams", 
+    82: "Jaxson Dart",
+    90: "Shedeur Sanders",
+    108: "Christian Watson", 
+    114: "Bucky Irving",
+    129: "Drake Maye", 
+    131: "Tyler Shough",
+    135: "Daniel Jones",
+    138: "Malik Willis",
+    139: "Parker Washington",
+    140: "Harold Fannin",
+    141: "Michael Wilson",
+    142: "Emanuel Wilson",
+    150: "Kyle Pitts",
+    157: "Quinshon Judkins",
+    163: "Colston Loveland"
+}
+
 @st.cache_data
 def load_base_data():
     df = pd.read_csv('fantasy_football_rankings.csv')
@@ -52,10 +80,8 @@ def load_base_data():
     def estimate_points(row):
         pos = row['Position']
         rank = row['Pos_Rank']
-        
         base = {'QB': 380, 'RB': 300, 'WR': 280, 'TE': 220, 'K': 140, 'DST': 130}
         decay = {'QB': 0.025, 'RB': 0.020, 'WR': 0.015, 'TE': 0.030, 'K': 0.015, 'DST': 0.015}
-        
         if pos in base:
             return base[pos] * math.exp(-decay[pos] * (rank - 1))
         return 0
@@ -65,12 +91,14 @@ def load_base_data():
 
 df_base = load_base_data()
 
-# Initialize slots in session state
+# Initialize slots and load pre-assigned keepers
 if 'slots' not in st.session_state:
     st.session_state.slots = {i: None for i in range(192)}
+    for idx, player in INITIAL_KEEPERS.items():
+        st.session_state.slots[idx] = player
 
 if 'keepers' not in st.session_state:
-    st.session_state.keepers = set()
+    st.session_state.keepers = set(INITIAL_KEEPERS.values())
 
 # -----------------
 # SIDEBAR CONTROLS
@@ -141,17 +169,13 @@ if st.sidebar.button("Reset Entire Board"):
 total_needed = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
 
 if "Live Dynamic" in vor_mode:
-    # Baseline adjusts based on ALL taken players so far
     removed_players = taken_players
 else:
-    # Baseline adjusts ONLY based on designated Keepers
     removed_players = list(st.session_state.keepers)
 
-# Calculate removed counts by position
 removed_df = df_base[df_base['Player'].isin(removed_players)]
 removed_counts = removed_df['Position'].value_counts().to_dict()
 
-# Calculate remaining pool and new VOR
 available_df = df_base[~df_base['Player'].isin(taken_players)].copy()
 available_df['Pool_Pos_Rank'] = available_df.groupby('Position')['Consensus'].rank(method='min')
 
@@ -205,15 +229,10 @@ with tab2:
     st.subheader(f"Available Players ({vor_mode})")
     
     col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-    qbs_left = len(available_df[available_df['Position'] == 'QB'])
-    rbs_left = len(available_df[available_df['Position'] == 'RB'])
-    wrs_left = len(available_df[available_df['Position'] == 'WR'])
-    tes_left = len(available_df[available_df['Position'] == 'TE'])
-    
-    col_kpi1.metric("Available QBs", qbs_left)
-    col_kpi2.metric("Available RBs", rbs_left)
-    col_kpi3.metric("Available WRs", wrs_left)
-    col_kpi4.metric("Available TEs", tes_left)
+    col_kpi1.metric("Available QBs", len(available_df[available_df['Position'] == 'QB']))
+    col_kpi2.metric("Available RBs", len(available_df[available_df['Position'] == 'RB']))
+    col_kpi3.metric("Available WRs", len(available_df[available_df['Position'] == 'WR']))
+    col_kpi4.metric("Available TEs", len(available_df[available_df['Position'] == 'TE']))
     
     st.dataframe(
         available_df[['Player', 'Position', 'Team', 'Tier', 'Pos_Rank', 'VOR', 'ADP']],
