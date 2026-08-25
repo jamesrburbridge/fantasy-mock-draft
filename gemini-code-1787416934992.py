@@ -2,9 +2,8 @@ import math
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Fantasy Mock Draft & Scarcity Dashboard", layout="wide")
+st.set_page_config(page_title="Draft Board & Scarcity Dashboard", layout="wide")
 
-# Full 16-round draft order with trades
 DRAFT_ORDER = [
     # Round 1
     "A More Rippl", "Scarred From", "Done done done", "The Barding", "CMC Music Fa", "crimsan jhad", "merkle fully", "A More Rippl", "sackinbycorin", "Something Something Drake Maye", "Done done done", "Titans and Co",
@@ -40,171 +39,95 @@ DRAFT_ORDER = [
     "CMC Music Fa", "Team Emoji 🏈", "Something Something Drake Maye", "sackinbycorin", "Big Penix En", "merkle fully", "crimsan jhad", "CMC Music Fa", "The Barding", "Team Emoji 🏈", "Scarred From", "A More Rippl"
 ]
 
-# Locked Keepers mapped to their 0-indexed draft slots
 INITIAL_KEEPERS = {
-    15: "Justin Herbert", 
-    40: "Chase Brown", 
-    45: "Jaxon Smith-Njigba",
-    56: "Chris Olave", 
-    57: "Brock Bowers",
-    68: "Bo Nix", 
-    70: "Travis Etienne",
-    72: "Tyler Warren", 
-    80: "Javonte Williams", 
-    82: "Jaxson Dart",
-    90: "Shedeur Sanders",
-    108: "Christian Watson", 
-    114: "Bucky Irving",
-    129: "Drake Maye", 
-    131: "Tyler Shough",
-    135: "Daniel Jones",
-    138: "Malik Willis",
-    139: "Parker Washington",
-    140: "Harold Fannin",
-    141: "Michael Wilson",
-    142: "Emanuel Wilson",
-    150: "Kyle Pitts",
-    157: "Quinshon Judkins",
-    163: "Colston Loveland"
+    15: "Justin Herbert", 40: "Chase Brown", 45: "Jaxon Smith-Njigba",
+    56: "Chris Olave", 57: "Brock Bowers", 68: "Bo Nix", 70: "Travis Etienne",
+    72: "Tyler Warren", 80: "Javonte Williams", 82: "Jaxson Dart",
+    90: "Shedeur Sanders", 108: "Christian Watson", 114: "Bucky Irving",
+    129: "Drake Maye", 131: "Tyler Shough", 135: "Daniel Jones",
+    138: "Malik Willis", 139: "Parker Washington", 140: "Harold Fannin",
+    141: "Michael Wilson", 142: "Emanuel Wilson", 150: "Kyle Pitts",
+    157: "Quinshon Judkins", 163: "Colston Loveland"
 }
+
+MY_TEAM_NAME = "Something Something Drake Maye"
+ROSTER_REQS = {'QB': 2, 'RB': 2, 'WR': 3, 'TE': 1, 'FLEX': 2}
 
 @st.cache_data
 def load_base_data():
     df = pd.read_csv('fantasy_football_rankings.csv')
-    df = df[['Player', 'Position', 'Team', 'Tier', 'Consensus', 'ADP']].copy()
-    
-    # Calculate initial Positional Rank in overall pool
+    df = df[['Player', 'Position', 'Team', 'Bye', 'Tier', 'Consensus', 'ADP']].copy()
     df['Pos_Rank'] = df.groupby('Position')['Consensus'].rank(method='min')
-    
-    # 2QB / Superflex Scarcity Point Curve Model
     def estimate_points(row):
         pos = row['Position']
         rank = row['Pos_Rank']
         base = {'QB': 380, 'RB': 300, 'WR': 280, 'TE': 220, 'K': 140, 'DST': 130}
         decay = {'QB': 0.025, 'RB': 0.020, 'WR': 0.015, 'TE': 0.030, 'K': 0.015, 'DST': 0.015}
-        if pos in base:
-            return base[pos] * math.exp(-decay[pos] * (rank - 1))
+        if pos in base: return base[pos] * math.exp(-decay[pos] * (rank - 1))
         return 0
-        
     df['Est_Pts'] = df.apply(estimate_points, axis=1)
     return df
 
 df_base = load_base_data()
 
-# Initialize slots and load pre-assigned keepers
 if 'slots' not in st.session_state:
     st.session_state.slots = {i: None for i in range(192)}
     for idx, player in INITIAL_KEEPERS.items():
         st.session_state.slots[idx] = player
-
 if 'keepers' not in st.session_state:
     st.session_state.keepers = set(INITIAL_KEEPERS.values())
 
-# -----------------
-# SIDEBAR CONTROLS
-# -----------------
-st.sidebar.title("Draft Settings & Controls")
-
-vor_mode = st.sidebar.radio(
-    "VOR Scarcity Mode",
-    ["Keeper-Adjusted Baseline (Roadmap)", "Live Dynamic (Real-Time Run Tracker)"],
-    help="Keeper-Adjusted locks the baseline after accounting for keepers. Live Dynamic constantly adjusts baselines as picks are made."
-)
-
+# --- Sidebar ---
+st.sidebar.title("Draft Settings")
+vor_mode = st.sidebar.radio("VOR Scarcity Mode", ["Keeper-Adjusted Baseline", "Live Dynamic"])
 st.sidebar.markdown("---")
-st.sidebar.subheader("Assign Keepers / Slot Picks")
-
-slot_labels = {}
-for i, team in enumerate(DRAFT_ORDER):
-    rnd = (i // 12) + 1
-    pick = (i % 12) + 1
-    slot_labels[i] = f"{rnd}.{pick:02d} ({team})"
-
-selected_slot_idx = st.sidebar.selectbox("Select Draft Slot", options=list(slot_labels.keys()), format_func=lambda x: slot_labels[x])
-
+slot_labels = {i: f"{(i // 12) + 1}.{(i % 12) + 1:02d} ({t})" for i, t in enumerate(DRAFT_ORDER)}
+selected_slot_idx = st.sidebar.selectbox("Assign Player to Slot", options=list(slot_labels.keys()), format_func=lambda x: slot_labels[x])
 taken_players = [p for p in st.session_state.slots.values() if p is not None]
 available_players_list = ["(Clear Slot)"] + [p for p in df_base['Player'] if p not in taken_players]
-
 selected_player = st.sidebar.selectbox("Select Player", available_players_list)
 is_keeper_check = st.sidebar.checkbox("Mark as Keeper", value=True)
 
-col_k1, col_k2 = st.sidebar.columns(2)
-if col_k1.button("Assign / Save", use_container_width=True):
+if st.sidebar.button("Assign / Save", use_container_width=True):
     if selected_player == "(Clear Slot)":
-        prev_player = st.session_state.slots[selected_slot_idx]
+        prev = st.session_state.slots[selected_slot_idx]
         st.session_state.slots[selected_slot_idx] = None
-        if prev_player in st.session_state.keepers:
-            st.session_state.keepers.remove(prev_player)
+        if prev in st.session_state.keepers: st.session_state.keepers.remove(prev)
     else:
         st.session_state.slots[selected_slot_idx] = selected_player
-        if is_keeper_check:
-            st.session_state.keepers.add(selected_player)
-        elif selected_player in st.session_state.keepers:
-            st.session_state.keepers.remove(selected_player)
+        if is_keeper_check: st.session_state.keepers.add(selected_player)
+        elif selected_player in st.session_state.keepers: st.session_state.keepers.remove(selected_player)
     st.rerun()
 
-# Quick Pick for on-the-clock drafting
-st.sidebar.markdown("---")
-st.sidebar.subheader("Live Draft Clock")
 next_pick_idx = next((i for i in range(192) if st.session_state.slots[i] is None), None)
-
 if next_pick_idx is not None:
-    st.sidebar.write(f"**On the Clock:** {slot_labels[next_pick_idx]}")
+    st.sidebar.markdown("---")
+    st.sidebar.write(f"**On Clock:** {slot_labels[next_pick_idx]}")
     live_player = st.sidebar.selectbox("Draft Next Player", [p for p in df_base['Player'] if p not in taken_players], key="live_pick")
-    if st.sidebar.button("Draft Pick", type="primary", use_container_width=True):
+    if st.sidebar.button("Draft Pick", type="primary"):
         st.session_state.slots[next_pick_idx] = live_player
         st.rerun()
-else:
-    st.sidebar.success("Draft Complete!")
 
-if st.sidebar.button("Reset Entire Board"):
-    st.session_state.slots = {i: None for i in range(192)}
-    st.session_state.keepers = set()
-    st.rerun()
-
-
-# -----------------
-# VOR CALCULATION ENGINE
-# -----------------
-total_needed = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
-
-if "Live Dynamic" in vor_mode:
-    removed_players = taken_players
-else:
-    removed_players = list(st.session_state.keepers)
-
-removed_df = df_base[df_base['Player'].isin(removed_players)]
-removed_counts = removed_df['Position'].value_counts().to_dict()
-
+# --- Scarcity Data Prep ---
+removed_players = taken_players if "Live" in vor_mode else list(st.session_state.keepers)
+removed_counts = df_base[df_base['Player'].isin(removed_players)]['Position'].value_counts().to_dict()
 available_df = df_base[~df_base['Player'].isin(taken_players)].copy()
 available_df['Pool_Pos_Rank'] = available_df.groupby('Position')['Consensus'].rank(method='min')
 
+total_needed = {'QB': 28, 'RB': 48, 'WR': 60, 'TE': 16, 'K': 12, 'DST': 12}
 rep_pts = {}
 for pos, base_total in total_needed.items():
     effective_target = max(1, base_total - removed_counts.get(pos, 0))
     pos_sub = available_df[available_df['Position'] == pos]
-    if len(pos_sub) >= effective_target:
-        rep_pts[pos] = pos_sub[pos_sub['Pool_Pos_Rank'] == effective_target].iloc[0]['Est_Pts']
-    else:
-        rep_pts[pos] = pos_sub['Est_Pts'].min() if not pos_sub.empty else 0
+    rep_pts[pos] = pos_sub[pos_sub['Pool_Pos_Rank'] == effective_target].iloc[0]['Est_Pts'] if len(pos_sub) >= effective_target else (pos_sub['Est_Pts'].min() if not pos_sub.empty else 0)
 
-available_df['VOR'] = available_df.apply(
-    lambda row: round(row['Est_Pts'] - rep_pts.get(row['Position'], 0), 1), axis=1
-)
+available_df['VOR'] = available_df.apply(lambda row: round(row['Est_Pts'] - rep_pts.get(row['Position'], 0), 1), axis=1)
 available_df = available_df.sort_values('VOR', ascending=False).reset_index(drop=True)
 
-
-# -----------------
-# MAIN DASHBOARD TABS
-# -----------------
-st.title("🏈 Fantasy Mock Draft Grid & Dynamic Scarcity Board")
-
-tab1, tab2 = st.tabs(["Draft Board Grid", "Available Players & Scarcity Dashboard"])
+# --- Layout Tabs ---
+tab1, tab2, tab3, tab4 = st.tabs(["Draft Board Grid", "Available Players", "My Team & Byes", "League Needs & Threats"])
 
 with tab1:
-    st.markdown("### Draft Board")
-    st.caption("Picks marked with 🔒 are designated Keepers. ⭐ indicates your draft picks.")
-    
     board_display = []
     for rnd in range(16):
         row_data = {}
@@ -212,30 +135,80 @@ with tab1:
             idx = rnd * 12 + pk
             team = DRAFT_ORDER[idx]
             player = st.session_state.slots[idx]
+            p_text = f"🔒 {player}" if player and player in st.session_state.keepers else (player if player else "---")
             
-            cell_text = player if player else "-"
-            if player and player in st.session_state.keepers:
-                cell_text = f"🔒 {cell_text}"
-            if team == "Something Something Drake Maye":
-                cell_text = f"⭐ {cell_text}"
-                
-            row_data[f"Pick {pk+1}"] = cell_text
+            # Formats the cell to explicitly show Team Name above the player pick
+            cell_val = f"⭐ {team} \n {p_text}" if team == MY_TEAM_NAME else f"{team} \n {p_text}"
+            row_data[f"Pick {pk+1}"] = cell_val
         board_display.append(row_data)
-
-    df_board = pd.DataFrame(board_display, index=[f"Round {r+1}" for r in range(16)])
-    st.dataframe(df_board, use_container_width=True, height=580)
+        
+    st.dataframe(pd.DataFrame(board_display, index=[f"Round {r+1}" for r in range(16)]), use_container_width=True, height=650)
 
 with tab2:
-    st.subheader(f"Available Players ({vor_mode})")
+    st.dataframe(available_df[['Player', 'Position', 'Tier', 'Bye', 'VOR', 'ADP']], use_container_width=True, height=550)
+
+with tab3:
+    st.subheader(f"My Roster: {MY_TEAM_NAME}")
+    my_players = [st.session_state.slots[i] for i, t in enumerate(DRAFT_ORDER) if t == MY_TEAM_NAME and st.session_state.slots[i]]
+    my_roster_df = df_base[df_base['Player'].isin(my_players)]
+    st.dataframe(my_roster_df[['Player', 'Position', 'Bye', 'Tier']], use_container_width=True)
     
-    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
-    col_kpi1.metric("Available QBs", len(available_df[available_df['Position'] == 'QB']))
-    col_kpi2.metric("Available RBs", len(available_df[available_df['Position'] == 'RB']))
-    col_kpi3.metric("Available WRs", len(available_df[available_df['Position'] == 'WR']))
-    col_kpi4.metric("Available TEs", len(available_df[available_df['Position'] == 'TE']))
+    byes = my_roster_df['Bye'].dropna().tolist()
+    dupes = set([x for x in byes if byes.count(x) > 1])
+    if dupes: st.error(f"⚠️ Bye Week Conflict Detected on Weeks: {', '.join([str(int(w)) for w in dupes])}")
+
+with tab4:
+    st.subheader("📊 League Positional Composition")
+    team_names = sorted(list(set(DRAFT_ORDER)))
+    needs_data = []
     
-    st.dataframe(
-        available_df[['Player', 'Position', 'Team', 'Tier', 'Pos_Rank', 'VOR', 'ADP']],
-        use_container_width=True,
-        height=500
-    )
+    for team in team_names:
+        team_picks = [st.session_state.slots[i] for i, t in enumerate(DRAFT_ORDER) if t == team and st.session_state.slots[i]]
+        counts = df_base[df_base['Player'].isin(team_picks)]['Position'].value_counts().to_dict()
+        
+        qbs, rbs, wrs, tes = counts.get('QB', 0), counts.get('RB', 0), counts.get('WR', 0), counts.get('TE', 0)
+        
+        urgencies = []
+        if qbs < ROSTER_REQS['QB']: urgencies.append(f"QB ({ROSTER_REQS['QB']-qbs})")
+        if rbs < ROSTER_REQS['RB']: urgencies.append(f"RB ({ROSTER_REQS['RB']-rbs})")
+        if wrs < ROSTER_REQS['WR']: urgencies.append(f"WR ({ROSTER_REQS['WR']-wrs})")
+        if tes < ROSTER_REQS['TE']: urgencies.append("TE (1)")
+        
+        needs_data.append({
+            "Team": team, "QB": qbs, "RB": rbs, "WR": wrs, "TE": tes,
+            "Urgent Starter Needs": ", ".join(urgencies) if urgencies else "Depth"
+        })
+        
+    df_needs = pd.DataFrame(needs_data)
+    st.dataframe(df_needs, use_container_width=True, height=450)
+
+    st.markdown("---")
+    st.subheader("🎯 Upcoming Turn Threat Radar")
+    
+    my_indices = [i for i, t in enumerate(DRAFT_ORDER) if t == MY_TEAM_NAME]
+    upcoming = [i for i in my_indices if i >= (next_pick_idx or 0)]
+    
+    if len(upcoming) >= 2:
+        start_idx, end_idx = upcoming[0], upcoming[1]
+        intervening_teams = [DRAFT_ORDER[i] for i in range(start_idx + 1, end_idx)]
+        st.write(f"**Teams picking before your next slot ({slot_labels[end_idx]}):** {len(intervening_teams)}")
+        
+        intervening_needs = df_needs[df_needs['Team'].isin(intervening_teams)]
+        st.dataframe(intervening_needs[['Team', 'Urgent Starter Needs']], use_container_width=True)
+
+        st.markdown("**Automated Tier-Run Alerts:**")
+        for pos in ['QB', 'RB', 'WR', 'TE']:
+            pos_df = available_df[available_df['Position'] == pos]
+            if pos_df.empty: continue
+            
+            top_tier = pos_df['Tier'].min()
+            tier_count = len(pos_df[pos_df['Tier'] == top_tier])
+            
+            teams_needing_pos = sum(1 for _, row in intervening_needs.iterrows() if pos in row['Urgent Starter Needs'])
+            
+            if teams_needing_pos >= tier_count and tier_count > 0:
+                st.error(f"🚨 **Run Risk:** {teams_needing_pos} intervening teams need a {pos}, and there are only {tier_count} Tier {int(top_tier)} {pos}s left!")
+            elif teams_needing_pos > 0 and tier_count <= 2:
+                st.warning(f"⚠️ **Scarcity Warning:** {teams_needing_pos} team(s) need a {pos}, and only {tier_count} Tier {int(top_tier)} {pos}s remain.")
+    else:
+        st.write("Not enough future draft picks to calculate radar.")
